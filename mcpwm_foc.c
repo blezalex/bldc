@@ -1957,6 +1957,12 @@ bool mcpwm_foc_measure_res_ind(float *res, float *ind) {
 	return true;
 }
 
+
+int16_t hal_angle_table[36] = { 0 };
+uint8_t hal_sw_table[] = { 1, 5, 4, 6, 2, 3 };
+uint8_t rev_hal_sw_table[] = { 255, 0, 4, 5, 2, 1, 3 };
+
+
 /**
  * Run the motor in open loop and figure out at which angles the hall sensors are.
  *
@@ -1990,7 +1996,7 @@ bool mcpwm_foc_hall_detect(float current, uint8_t *hall_table) {
 	// Lock the motor
 	motor->m_phase_now_override = 0;
 
-	for (int i = 0;i < 1000;i++) {
+	for (int i = 0;i < 3000;i++) {
 		motor->m_id_set = (float)i * current / 1000.0;
 		chThdSleepMilliseconds(1);
 	}
@@ -2002,11 +2008,20 @@ bool mcpwm_foc_hall_detect(float current, uint8_t *hall_table) {
 	memset(cos_hall, 0, sizeof(cos_hall));
 	memset(hall_iterations, 0, sizeof(hall_iterations));
 
-	// Forwards
+	float sin_hall_tr[36];
+	float cos_hall_tr[36];
+	for (int i = 0; i < 36; i++) {
+		sin_hall_tr[i] = 0;
+		cos_hall_tr[i] = 0;
+	}
+
+	uint32_t hal_table_idx = 0;
+	int prev_hal = 0;
+	// Forward
 	for (int i = 0;i < 3;i++) {
 		for (int j = 0;j < 360;j++) {
 			motor->m_phase_now_override = (float)j * M_PI / 180.0;
-			chThdSleepMilliseconds(5);
+			chThdSleepMilliseconds(10);
 
 			int hall = utils_read_hall(motor != &m_motor_1);
 			float s, c;
@@ -2014,6 +2029,16 @@ bool mcpwm_foc_hall_detect(float current, uint8_t *hall_table) {
 			sin_hall[hall] += s;
 			cos_hall[hall] += c;
 			hall_iterations[hall]++;
+
+			if (hall != prev_hal && hall != 0 && hall < 7) {
+				sin_hall_tr[(hall - 1) * 6 + (prev_hal - 1)] += s;
+				cos_hall_tr[(hall - 1) * 6 + (prev_hal - 1)] += c;
+				prev_hal = hall;
+
+				uint32_t idx = hal_table_idx++ % 6;
+				hal_sw_table[idx] = hall;
+				rev_hal_sw_table[hall] = idx;
+			}
 		}
 	}
 
@@ -2021,7 +2046,7 @@ bool mcpwm_foc_hall_detect(float current, uint8_t *hall_table) {
 	for (int i = 0;i < 3;i++) {
 		for (int j = 360;j >= 0;j--) {
 			motor->m_phase_now_override = (float)j * M_PI / 180.0;
-			chThdSleepMilliseconds(5);
+			chThdSleepMilliseconds(10);
 
 			int hall = utils_read_hall(motor != &m_motor_1);
 			float s, c;
@@ -2029,6 +2054,13 @@ bool mcpwm_foc_hall_detect(float current, uint8_t *hall_table) {
 			sin_hall[hall] += s;
 			cos_hall[hall] += c;
 			hall_iterations[hall]++;
+
+
+			if (hall != prev_hal && hall != 0 && hall < 7) {
+				sin_hall_tr[(hall - 1) * 6 + (prev_hal - 1)] += s;
+				cos_hall_tr[(hall - 1) * 6 + (prev_hal - 1)] += c;
+				prev_hal = hall;
+			}
 		}
 	}
 
@@ -2052,6 +2084,13 @@ bool mcpwm_foc_hall_detect(float current, uint8_t *hall_table) {
 			hall_table[i] = 255;
 			fails++;
 		}
+	}
+
+
+	for (int i = 0; i < 36; i++) {
+		float ang = atan2f(sin_hall_tr[i], cos_hall_tr[i]) * 180.0 / M_PI;
+		utils_norm_angle(&ang);
+		hal_angle_table[i] = ang + 0.5;
 	}
 
 	mc_interface_unlock();
@@ -3812,7 +3851,7 @@ static float correct_encoder(float obs_angle, float enc_angle, float speed,
 	return motor->m_using_encoder ? enc_angle : obs_angle;
 }
 
-static float correct_hall(float angle, float dt, volatile motor_all_state_t *motor) {
+static float correct_hall_vesc(float angle, float dt, volatile motor_all_state_t *motor) {
 	volatile mc_configuration *conf_now = motor->m_conf;
 	motor->m_hall_dt_diff_now += dt;
 
@@ -3938,4 +3977,157 @@ static void terminal_plot_hfi(int argc, const char **argv) {
 	} else {
 		commands_printf("This command requires one argument.\n");
 	}
+}
+
+
+
+float avg_angle(float a1, float a2) {
+	float acc_s;
+	float acc_c;
+	sincosf(a1, &acc_s, &acc_c);
+
+	float s;
+	float c;
+	sincosf(a2, &s, &c);
+	acc_s += s;
+	acc_c += c;
+	return atan2f(acc_s, acc_c);
+}
+
+float lookup_angle(int current_hal, int prev_hal) {
+	float angle1 = (hal_angle_table[(current_hal - 1) * 6 + (prev_hal - 1)]);
+	float angle2 = (hal_angle_table[(prev_hal - 1) * 6 + (current_hal - 1)]);
+	float angle = avg_angle(angle1 * M_PI / 180, angle2 * M_PI / 180);
+
+	utils_norm_angle_rad(&angle);
+	return angle;
+}
+
+float correct_hall(float angle, float dt, volatile motor_all_state_t* motor) {
+	if (motor->m_conf->foc_hall_table[0] != 123) {
+		return correct_hall_vesc(angle, dt, motor);
+	}
+
+	static int ang_hall_int_prev = -1;
+	float rpm_abs = fabsf(motor->m_speed_est_fast / ((2.0 * M_PI) / 60.0));
+	static bool using_hall = true;
+
+	// Hysteresis 5 % of total speed
+	float hyst = motor->m_conf->foc_sl_erpm * 0.1;
+	if (using_hall) {
+		if (rpm_abs > (motor->m_conf->foc_sl_erpm + hyst)) {
+			using_hall = false;
+		}
+	}
+	else {
+		if (rpm_abs < (motor->m_conf->foc_sl_erpm - hyst)) {
+			using_hall = true;
+		}
+	}
+
+	static int prev_hal_value = -1;
+
+	const int current_hal_value = utils_read_hall(false);
+
+	static float current_hal_angle = 0;
+	static float prev_hal_angle = 0;
+	static float time_since_last_transition = 0;
+	static float hall_speed = 0;
+	static float next_angle = 0;
+	static float estimated_time_to_next_switch = 0;
+
+	static float interpolated_angle = 0;
+
+	static float angle_between_current_and_next = 0;
+
+	static bool fast_enough_to_interpolate = false;
+
+	if (current_hal_value == 0 || current_hal_angle == 7) {
+		// invalid_hall_read_cnt++; TODO: display hall error cnt to allow user diagnose these problems
+		return angle; // invalid hall data
+	}
+
+
+	if (prev_hal_value == -1) {
+		prev_hal_value = current_hal_value;
+		angle_between_current_and_next = motor->m_conf->foc_hall_table[current_hal_value] / 200.0 * 360 / 180 * M_PI;
+		time_since_last_transition = 0;
+	}
+
+	// TODO: if value is invalid, skip the value (keep interpolating)
+
+	static float latest_hal_speed = 0;
+	time_since_last_transition += dt;
+	if (current_hal_value != prev_hal_value) {
+		current_hal_angle = lookup_angle(current_hal_value, prev_hal_value);
+		prev_hal_value = current_hal_value;
+
+		float diff = current_hal_angle - prev_hal_angle;
+		utils_norm_angle_rad(&diff);
+
+		latest_hal_speed = diff / time_since_last_transition;
+
+		if (latest_hal_speed == 0 || (hall_speed != 0 && ((latest_hal_speed >= 0) != (hall_speed >= 0)))) {
+			// direction changed
+			hall_speed = 0;
+		}
+		else {
+			float rc = 0.5;
+			hall_speed = rc * latest_hal_speed + (1 - rc) * hall_speed;
+		}
+
+		time_since_last_transition = 0;
+
+		prev_hal_angle = current_hal_angle;
+
+		int next_hal_raw = hal_sw_table[(rev_hal_sw_table[current_hal_value] + (latest_hal_speed > 0 ? 1 : 5)) % 6];
+		next_angle = lookup_angle(next_hal_raw, current_hal_value);
+
+
+		float next_diff = next_angle - current_hal_angle;
+		utils_norm_angle_rad(&next_diff);
+		estimated_time_to_next_switch = fabsf(next_diff / hall_speed);
+
+		angle_between_current_and_next = motor->m_conf->foc_hall_table[current_hal_value] / 200.0 * 360 / 180 * M_PI;
+		fast_enough_to_interpolate = fabsf(latest_hal_speed) > M_PI * 2 / 3.0; // at least one hall switch a sec
+
+		interpolated_angle = current_hal_angle;
+	}
+	else {
+		// No update from HAL, interpolate or use middle pos.
+		if (fast_enough_to_interpolate) {
+			// if spinning fast enough, integrate
+			interpolated_angle += hall_speed * dt;
+		}
+		else {
+			interpolated_angle = angle_between_current_and_next;
+		}
+
+		if (estimated_time_to_next_switch < time_since_last_transition) {
+			// Motor slowed down a lot, undo integration to middle
+			float diff = utils_angle_difference_rad(interpolated_angle, angle_between_current_and_next);
+
+			if (hall_speed > 0) {
+				interpolated_angle -= (diff > 0) * hall_speed * dt * 2;
+			}
+			else {
+				interpolated_angle -= (diff < 0) * hall_speed * dt * 2;
+			}				
+		}
+
+		// ensure interpolated_angle does not cross next_angle boundary
+		float diff = utils_angle_difference_rad(next_angle, interpolated_angle);
+		if ((hall_speed > 0 && diff < 0) || (hall_speed < 0 && diff > 0)) {
+			interpolated_angle = next_angle;		
+		}
+
+		utils_norm_angle_rad(&interpolated_angle);
+	}
+
+	if (using_hall) {
+		angle = interpolated_angle;
+		utils_norm_angle_rad(&angle);
+	}
+
+	return angle;
 }
