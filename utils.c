@@ -775,6 +775,22 @@ int utils_read_hall(bool is_second_motor) {
 		h1 += READ_HALL1_2();
 		h2 += READ_HALL2_2();
 		h3 += READ_HALL3_2();
+
+		h1 = READ_HALL1_2();
+		h2 = READ_HALL2_2();
+		h3 = READ_HALL3_2();
+
+		h1 += READ_HALL1_2();
+		h2 += READ_HALL2_2();
+		h3 += READ_HALL3_2();
+
+		h1 += READ_HALL1_2();
+		h2 += READ_HALL2_2();
+		h3 += READ_HALL3_2();
+
+		h1 += READ_HALL1_2();
+		h2 += READ_HALL2_2();
+		h3 += READ_HALL3_2();
 	} else {
 		h1 = READ_HALL1();
 		h2 = READ_HALL2();
@@ -787,9 +803,25 @@ int utils_read_hall(bool is_second_motor) {
 		h1 += READ_HALL1();
 		h2 += READ_HALL2();
 		h3 += READ_HALL3();
+
+		h1 += READ_HALL1();
+		h2 += READ_HALL2();
+		h3 += READ_HALL3();
+
+		h1 += READ_HALL1();
+		h2 += READ_HALL2();
+		h3 += READ_HALL3();
+
+		h1 += READ_HALL1();
+		h2 += READ_HALL2();
+		h3 += READ_HALL3();
+
+		h1 += READ_HALL1();
+		h2 += READ_HALL2();
+		h3 += READ_HALL3();
 	}
 
-	return (h1 > 1) | ((h2 > 1) << 1) | ((h3 > 1) << 2);
+	return (h1 > 3) | ((h2 > 3) << 1) | ((h3 > 3) << 2);
 }
 
 // A mapping of a samsung 30q cell for % remaining capacity vs. voltage from
