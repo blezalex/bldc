@@ -101,6 +101,7 @@ float mcpwm_foc_get_tot_current_in_filtered_motor(bool is_second_motor);
 float mcpwm_foc_get_abs_motor_current_motor(bool is_second_motor);
 float mcpwm_foc_get_abs_motor_current_filtered_motor(bool is_second_motor);
 mc_state mcpwm_foc_get_state_motor(bool is_second_motor);
+void mcpwm_hal_print_state(void);
 
 // Interrupt handlers
 void mcpwm_foc_tim_sample_int_handler(void);

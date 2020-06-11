@@ -324,6 +324,8 @@ static void update_hfi_samples(foc_hfi_samples samples, volatile motor_all_state
 	utils_sys_unlock_cnt();
 }
 
+static int32_t invalid_hall_read_cnt = 0;
+
 static void timer_reinit(int f_sw) {
 	utils_sys_lock_cnt();
 
@@ -3871,7 +3873,11 @@ static float correct_hall_vesc(float angle, float dt, volatile motor_all_state_t
 		}
 	}
 
-	int ang_hall_int = conf_now->foc_hall_table[utils_read_hall(motor != &m_motor_1)];
+	int hal_raw = utils_read_hall(motor != &m_motor_1);
+	if (hal_raw == 0 || hal_raw == 7) {
+		invalid_hall_read_cnt++;
+	}
+	int ang_hall_int = conf_now->foc_hall_table[hal_raw];
 
 	// Only override the observer if the hall sensor value is valid.
 	if (ang_hall_int < 201) {
@@ -3944,6 +3950,28 @@ static float correct_hall_vesc(float angle, float dt, volatile motor_all_state_t
 	}
 
 	return angle;
+}
+
+
+void mcpwm_hal_print_state(void) {
+	commands_printf("Hal error count %d", invalid_hall_read_cnt);
+
+	commands_printf("Hal angle table");
+	for (unsigned int i = 0; i < 36; i++) {
+		commands_printf("hall[%d] %d -> %d:    %d", i, i % 6 + 1, i / 6 + 1, hal_angle_table[i]);
+	}
+
+	commands_printf("Hal switch table");
+	for (int i = 0; i < 6; i++) {
+		commands_printf("hal_sw_table[%d]:        %d", i, hal_sw_table[i]);
+	}
+
+	commands_printf("Hal rev_switch table");
+	for (int i = 0; i < 7; i++) {
+		commands_printf("rev_hal_sw_table[%d]:        %d", i, rev_hal_sw_table[i]);
+	}
+
+	commands_printf("");
 }
 
 static void terminal_plot_hfi(int argc, const char **argv) {
@@ -4043,7 +4071,7 @@ float correct_hall(float angle, float dt, volatile motor_all_state_t* motor) {
 	static bool fast_enough_to_interpolate = false;
 
 	if (current_hal_value == 0 || current_hal_angle == 7) {
-		// invalid_hall_read_cnt++; TODO: display hall error cnt to allow user diagnose these problems
+		invalid_hall_read_cnt++; // TODO: display hall error cnt to allow user diagnose these problems
 		return angle; // invalid hall data
 	}
 

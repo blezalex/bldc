@@ -958,6 +958,9 @@ void terminal_process_string(char *str) {
 		} else {
 			commands_printf("This command requires one argument.\n");
 		}
+	} else if (strcmp(argv[0], "hal_state") == 0) {
+		mcpwm_hal_print_state();
+		commands_printf(" ");
 	}
 
 	// The help command
